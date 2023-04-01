@@ -1,0 +1,128 @@
+version: '3'
+
+networks:
+  whaticket:
+  nginx-proxy:
+
+
+volumes:
+  ngx_conf:
+  ngx_vhost:
+  ngx_html:
+  ngx_dhparam:
+  ngx_certs:
+  ngx_acme:
+
+    
+services:
+
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy
+    container_name: nginx-proxy
+    restart: always
+    ports:
+      - "14080:80"
+      - "14443:443"
+      
+    volumes:
+      - ngx_conf:/etc/nginx/conf.d
+      - ngx_vhost:/etc/nginx/vhost.d
+      - ngx_html:/usr/share/nginx/html
+      - ngx_dhparam:/etc/nginx/dhparam
+      - ngx_certs:/etc/nginx/certs:ro
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    networks:
+     nginx-proxy:
+        aliases:
+        - nginx-proxy
+
+  acme-companion:
+    image: nginxproxy/acme-companion
+    container_name: acme-companion
+    restart: always
+    depends_on:
+      - nginx-proxy
+    volumes:
+      - ngx_vhost:/etc/nginx/vhost.d
+      - ngx_html:/usr/share/nginx/html
+      - ngx_dhparam:/etc/nginx/dhparam:ro
+      - ngx_certs:/etc/nginx/certs
+      - ngx_acme:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+    networks:
+      nginx-proxy:
+        aliases:
+        - acme-companion
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ./Dockerfile
+    restart: always
+    environment:
+      - DB_HOST=mysql
+      - DB_USER=root
+      - DB_PASS=${MYSQL_ROOT_PASSWORD:-strongpassword}
+      - DB_NAME=${MYSQL_DATABASE:-whaticket}
+      - JWT_SECRET=${JWT_SECRET:-3123123213123}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-75756756756}
+      - BACKEND_URL=${BACKEND_URL:-http://localhost}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - PROXY_PORT=${PROXY_PORT:-8080}
+      - CHROME_ARGS=--no-sandbox --disable-setuid-sandbox
+      - VIRTUAL_HOST=${BACKEND_SERVER_NAME}
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=${BACKEND_SERVER_NAME}
+      - LETSENCRYPT_EMAIL=${LE_MAIL:-webmaster@example.com}
+    ports:
+      - "8080:3000"
+    volumes:
+      - ./backend/public/:/usr/src/app/public/
+      - ./backend/.wwebjs_auth/:/usr/src/app/.wwebjs_auth/
+    networks:
+      - whaticket
+      - nginx-proxy
+
+  frontend:
+    expose:
+      - ${FRONTEND_PORT:-3000}
+    ports:
+      - ${FRONTEND_PORT:-3000}:80
+      - ${FRONTEND_SSL_PORT:-3001}:443
+    build:
+      context: ./frontend
+      dockerfile: ./Dockerfile
+    restart: always
+    environment:
+      - URL_BACKEND=backend:3000
+      - REACT_APP_BACKEND_URL=${BACKEND_URL:-http://localhost}:${PROXY_PORT:-443}/
+      - FRONTEND_SERVER_NAME=${FRONTEND_SERVER_NAME}
+      - BACKEND_SERVER_NAME=${BACKEND_SERVER_NAME}
+      - VIRTUAL_HOST=${FRONTEND_SERVER_NAME}
+      - VIRTUAL_PORT=80
+      - LETSENCRYPT_HOST=${FRONTEND_SERVER_NAME}
+      - LETSENCRYPT_EMAIL=${LE_MAIL:-webmaster@example.com}
+    volumes:
+      - ./ssl/certs/:/etc/nginx/ssl/
+      - ./ssl/www/:/var/www/letsencrypt/
+    networks:
+      - whaticket
+      - nginx-proxy
+      
+
+  mysql:
+    image: ${MYSQL_ENGINE:-mariadb}:${MYSQL_VERSION:-10.6}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin    
+    volumes:
+      - ./.docker/data/:/var/lib/mysql
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-whaticket}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-strongpassword}
+      - TZ=${TZ:-America/Fortaleza}
+    ports:
+      - ${MYSQL_PORT:-3306}:3306
+    restart: always
+    networks:
+      - whaticket
