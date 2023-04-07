@@ -7,19 +7,37 @@ COPY src/ ./src/
 COPY public/ ./public/
 RUN npm run build
 
-FROM nginx:alpine
-RUN apk add --no-cache jq openssl
+RUN apk add \
+  --no-cache \
+  git \
+  autoconf \
+  automake \
+  libtool \
+  build-base \
+  && cd /usr/src \
+  && git clone https://github.com/stedolan/jq.git
 
-ENV DOCKERIZE_VERSION v0.6.1
-RUN wget https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-alpine-linux-amd64-$DOCKERIZE_VERSION.tar.gz \
-    && tar -C /usr/local/bin -xzvf dockerize-alpine-linux-amd64-$DOCKERIZE_VERSION.tar.gz \
-    && rm dockerize-alpine-linux-amd64-$DOCKERIZE_VERSION.tar.gz
+WORKDIR /usr/src/jq
 
-ENV PUBLIC_HTML=/var/www/public/
+RUN git submodule update --init \
+  && autoreconf -fi \
+  && ./configure --disable-docs --disable-maintainer-mode --with-oniguruma \
+  && make -j8 LDFLAGS=-all-static \
+  && strip jq
 
-COPY .docker/nginx /etc/nginx/
-COPY --from=build-deps /usr/src/app/build ${PUBLIC_HTML}
+
+FROM busybox:musl
+
+COPY .docker/*.sh /docker-entrypoint.d/
+RUN chmod +x /docker-entrypoint.d/*.sh \
+  && adduser -D static \
+  && echo "E404:/home/static/index.html" > /home/static/httpd.conf
+
+USER static
+COPY --from=build-deps /usr/src/jq/jq /bin/
+
+ENV PUBLIC_HTML=/home/static/
+COPY --from=build-deps /usr/src/app/build /home/static
 EXPOSE 80
 
-COPY .docker/add-env-vars.sh /docker-entrypoint.d/01-add-env-vars.sh
-RUN chmod +x /docker-entrypoint.d/01-add-env-vars.sh
+CMD ["run-parts", "/docker-entrypoint.d/"]
